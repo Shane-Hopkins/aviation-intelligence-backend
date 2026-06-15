@@ -34,20 +34,21 @@ async function retrieveReleases(query: string, limit = 20) {
       jurisdiction: pressReleases.jurisdiction,
       effectiveDate:pressReleases.effectiveDate,
       aiSummary:    pressReleases.aiSummary,
+      fullContent:  pressReleases.fullContent,
       sourceCode:   pressSources.code,
       sourceName:   pressSources.name,
     })
     .from(pressReleases)
     .innerJoin(pressSources, eq(pressSources.id, pressReleases.sourceId))
-    .where(isNotNull(pressReleases.aiSummary))
+    .where(isNotNull(pressReleases.fullContent))
     .orderBy(desc(pressReleases.publishedAt))
     .limit(limit)
 
   if (keywords.length === 0) return base
 
-  // Build OR conditions for all keywords
+  // Build OR conditions for all keywords — search headline and full content
   const kwConditions = keywords.map(kw =>
-    sql`(lower(${pressReleases.headline}) like ${'%' + kw + '%'} or lower(coalesce(${pressReleases.aiSummary}, '')) like ${'%' + kw + '%'} or lower(coalesce(${pressReleases.docRef}, '')) like ${'%' + kw + '%'})`
+    sql`(lower(${pressReleases.headline}) like ${'%' + kw + '%'} or lower(coalesce(${pressReleases.fullContent}, ${pressReleases.content}, '')) like ${'%' + kw + '%'})`
   )
   const orChain = kwConditions.reduce((acc, c, i) => i === 0 ? c : sql`${acc} or ${c}`)
 
@@ -63,12 +64,13 @@ async function retrieveReleases(query: string, limit = 20) {
       jurisdiction: pressReleases.jurisdiction,
       effectiveDate:pressReleases.effectiveDate,
       aiSummary:    pressReleases.aiSummary,
+      fullContent:  pressReleases.fullContent,
       sourceCode:   pressSources.code,
       sourceName:   pressSources.name,
     })
     .from(pressReleases)
     .innerJoin(pressSources, eq(pressSources.id, pressReleases.sourceId))
-    .where(sql`${isNotNull(pressReleases.aiSummary)} and (${orChain})`)
+    .where(sql`${isNotNull(pressReleases.fullContent)} and (${orChain})`)
     .orderBy(desc(pressReleases.publishedAt))
     .limit(limit)
 }
@@ -95,7 +97,7 @@ async function synthesise(
     ref: d.docRef ?? d.externalId,
     source: d.sourceName,
     headline: d.headline,
-    summary: d.aiSummary ?? '',
+    content: (d.fullContent ?? d.aiSummary ?? '').slice(0, 1200),
     category: d.category ?? 'Industry',
     jurisdiction: d.jurisdiction ?? '',
     effectiveDate: d.effectiveDate ?? '',

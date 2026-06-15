@@ -1,5 +1,6 @@
 // Press-release runner — orchestrates all press scrapers, persists new
 // releases to the database, and triggers Claude summarisation.
+import * as cheerio from 'cheerio'
 import { db } from '../db/client.js'
 import { pressSources, pressReleases, pressScraperRuns } from '../db/schema.js'
 import { eq } from 'drizzle-orm'
@@ -10,7 +11,75 @@ import { scrapeBoeing } from './scrapers/boeing.js'
 import { scrapeAirbus } from './scrapers/airbus.js'
 import { scrapeICAO } from './scrapers/icao.js'
 import { summariseNewReleases } from './summarize.js'
-import type { PressScraperResult } from './scrapers/types.js'
+import type { PressScraperResult, ScrapedRelease } from './scrapers/types.js'
+import { sleep } from './scrapers/types.js'
+
+// ---------------------------------------------------------------------------
+// Fetch og:image and full article body for a single press release URL.
+// Generic — works across FAA, EASA, TC, Boeing, Airbus, ICAO pages.
+// ---------------------------------------------------------------------------
+async function fetchArticleDetails(url: string): Promise<{ imageUrl?: string; fullContent?: string }> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; AviationPress/1.0)',
+        Accept: 'text/html',
+      },
+      signal: AbortSignal.timeout(14_000),
+    })
+    if (!res.ok) return {}
+
+    const $ = cheerio.load(await res.text())
+
+    // og:image is reliable across all major newsroom platforms
+    const imageUrl =
+      $('meta[property="og:image"]').attr('content') ||
+      $('meta[name="twitter:image"]').attr('content') ||
+      $('article img').first().attr('src') ||
+      undefined
+
+    // Article body — try semantic selectors in priority order
+    const bodyEl = $(
+      'article, [role="main"], .press-release-body, .article-body, ' +
+      '.release-content, .field--type-text-with-summary, .entry-content, ' +
+      '.news-body, .content-body, main'
+    ).first()
+
+    const paragraphs = (bodyEl.length ? bodyEl : $('body'))
+      .find('p')
+      .map((_, el) => $(el).text().trim())
+      .get()
+      .filter(t => t.length > 40) // skip short nav/caption lines
+
+    const fullContent = paragraphs.join('\n\n').slice(0, 8000) || undefined
+
+    return { imageUrl, fullContent }
+  } catch {
+    return {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Enrich scraped releases with article details (og:image + full text).
+// Mutates releases in-place. Rate-limited — max 15 fetches per run.
+// ---------------------------------------------------------------------------
+async function enrichReleases(releases: ScrapedRelease[]): Promise<void> {
+  const MAX = 15
+  let count = 0
+  for (const r of releases) {
+    if (!r.url || count >= MAX) break
+    const details = await fetchArticleDetails(r.url)
+    if (details.imageUrl) r.imageUrl = details.imageUrl
+    // Only overwrite fullContent if we didn't already have a meaningful blurb
+    if (details.fullContent && (!r.content || r.content.length < 300)) {
+      r.fullContent = details.fullContent
+    } else if (details.fullContent) {
+      r.fullContent = details.fullContent
+    }
+    count++
+    await sleep(300) // polite crawl rate
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Route each source to its scraper module
@@ -45,6 +114,8 @@ async function persistReleases(sourceId: number, result: PressScraperResult): Pr
           url: r.url ?? null,
           publishedAt: r.publishedAt ?? null,
           content: r.content ?? null,
+          imageUrl: r.imageUrl ?? null,
+          fullContent: r.fullContent ?? null,
         })
         .onConflictDoNothing()
         .returning({ id: pressReleases.id })
@@ -95,6 +166,12 @@ export async function runPressSource(sourceId: number): Promise<void> {
     result = await runScraper(source.scraperType)
   } catch (err) {
     result = { releases: [], status: 'err', itemsCollected: 0, error: String(err) }
+  }
+
+  // Enrich each release with og:image and full article text
+  if (result.releases.length > 0) {
+    console.log(`[press] Enriching up to 15 articles for ${source.name}…`)
+    await enrichReleases(result.releases)
   }
 
   const newIds = await persistReleases(sourceId, result)

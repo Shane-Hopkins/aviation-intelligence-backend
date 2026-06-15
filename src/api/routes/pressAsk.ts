@@ -45,8 +45,12 @@ async function retrieveReleases(query: string, limit = 20) {
 
   if (keywords.length === 0) return base
 
-  // Apply first keyword as WHERE condition (simple approach — sufficient for MVP)
-  const kw = keywords[0]
+  // Build OR conditions for all keywords
+  const kwConditions = keywords.map(kw =>
+    sql`(lower(${pressReleases.headline}) like ${'%' + kw + '%'} or lower(coalesce(${pressReleases.aiSummary}, '')) like ${'%' + kw + '%'} or lower(coalesce(${pressReleases.docRef}, '')) like ${'%' + kw + '%'})`
+  )
+  const orChain = kwConditions.reduce((acc, c, i) => i === 0 ? c : sql`${acc} or ${c}`)
+
   return db
     .select({
       id:           pressReleases.id,
@@ -64,13 +68,7 @@ async function retrieveReleases(query: string, limit = 20) {
     })
     .from(pressReleases)
     .innerJoin(pressSources, eq(pressSources.id, pressReleases.sourceId))
-    .where(
-      sql`${isNotNull(pressReleases.aiSummary)} and (
-        lower(${pressReleases.headline}) like ${'%' + kw + '%'} or
-        lower(${pressReleases.aiSummary}) like ${'%' + kw + '%'} or
-        lower(coalesce(${pressReleases.docRef}, '')) like ${'%' + kw + '%'}
-      )`,
-    )
+    .where(sql`${isNotNull(pressReleases.aiSummary)} and (${orChain})`)
     .orderBy(desc(pressReleases.publishedAt))
     .limit(limit)
 }

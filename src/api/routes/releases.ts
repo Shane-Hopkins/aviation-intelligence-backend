@@ -1,4 +1,4 @@
-// Press release routes — feeds the Dashboard screen.
+// Press release routes — feeds the Dashboard press archive screen.
 import { Hono } from 'hono'
 import { db } from '../../db/client.js'
 import { pressReleases, pressSources, pressScraperRuns } from '../../db/schema.js'
@@ -47,6 +47,7 @@ router.get('/', async c => {
       jurisdiction:  pressReleases.jurisdiction,
       effectiveDate: pressReleases.effectiveDate,
       aiSummary:     pressReleases.aiSummary,
+      imageUrl:      pressReleases.imageUrl,
       createdAt:     pressReleases.createdAt,
     })
     .from(pressReleases)
@@ -63,6 +64,7 @@ router.get('/', async c => {
       doc:          r.docRef ?? r.externalId,
       headline:     r.headline,
       url:          r.url ?? null,
+      imageUrl:     r.imageUrl ?? null,
       time:         timeAgo(refDate),
       date:         utcLabel(refDate),
       summary:      r.aiSummary ?? 'AI summary pending…',
@@ -72,6 +74,61 @@ router.get('/', async c => {
   })
 
   return c.json({ releases })
+})
+
+// ---------------------------------------------------------------------------
+// GET /api/releases/:id — full detail for a single press release
+// ---------------------------------------------------------------------------
+router.get('/:id', async c => {
+  const id = Number(c.req.param('id'))
+  if (isNaN(id)) return c.json({ error: 'Invalid id' }, 400)
+
+  const rows = await db
+    .select({
+      id:            pressReleases.id,
+      sourceCode:    pressSources.code,
+      sourceName:    pressSources.name,
+      docRef:        pressReleases.docRef,
+      externalId:    pressReleases.externalId,
+      headline:      pressReleases.headline,
+      url:           pressReleases.url,
+      publishedAt:   pressReleases.publishedAt,
+      category:      pressReleases.category,
+      jurisdiction:  pressReleases.jurisdiction,
+      effectiveDate: pressReleases.effectiveDate,
+      aiSummary:     pressReleases.aiSummary,
+      imageUrl:      pressReleases.imageUrl,
+      fullContent:   pressReleases.fullContent,
+      content:       pressReleases.content,
+      createdAt:     pressReleases.createdAt,
+    })
+    .from(pressReleases)
+    .innerJoin(pressSources, eq(pressSources.id, pressReleases.sourceId))
+    .where(eq(pressReleases.id, id))
+    .limit(1)
+
+  if (rows.length === 0) return c.json({ error: 'Not found' }, 404)
+  const r = rows[0]
+  const refDate = r.publishedAt ? new Date(r.publishedAt) : new Date(r.createdAt)
+
+  return c.json({
+    release: {
+      id:           r.id,
+      source:       r.sourceCode,
+      sourceName:   r.sourceName,
+      category:     r.category ?? 'Industry',
+      doc:          r.docRef ?? r.externalId,
+      headline:     r.headline,
+      url:          r.url ?? null,
+      imageUrl:     r.imageUrl ?? null,
+      time:         timeAgo(refDate),
+      date:         utcLabel(refDate),
+      summary:      r.aiSummary ?? null,
+      jurisdiction: r.jurisdiction ?? null,
+      effective:    r.effectiveDate ?? null,
+      fullContent:  r.fullContent ?? r.content ?? null,
+    },
+  })
 })
 
 // ---------------------------------------------------------------------------

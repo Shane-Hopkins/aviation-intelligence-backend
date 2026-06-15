@@ -129,6 +129,8 @@ export const pressReleases = pgTable('press_releases', {
   url: text('url'),
   publishedAt: timestamp('published_at'),
   content: text('content'),          // excerpt / abstract for AI summarisation
+  imageUrl: text('image_url'),       // og:image or first article image
+  fullContent: text('full_content'), // full scraped article body text
   category: text('category'),        // 'Safety' | 'Regulation' | 'Industry' — set by AI
   jurisdiction: text('jurisdiction'),
   effectiveDate: text('effective_date'),

@@ -92,43 +92,36 @@ function parsePosts(html: string, thread: ThreadRef): ScrapedPost[] {
   const $ = cheerio.load(html)
   const posts: ScrapedPost[] = []
 
-  // vBulletin 3: posts are in div#posts > table.tborder
-  // vBulletin 4: div.postcontainer
-  // XenForo: article.message
+  // PPRuNe uses vBulletin. Each post is a div[id^="post"] inside div#posts.
+  // The numeric ID (e.g. "post12100196") distinguishes posts from other divs.
+  $('#posts > div[id^="post"]').each((i, el) => {
+    const $el = $(el)
+    const postId = $el.attr('id') ?? `post_${thread.id}_${i}`
 
-  const selectors = [
-    { container: 'div.postcontainer', body: 'blockquote.postcontent', author: 'div.username_container strong' },
-    { container: 'table[id^="post"]', body: 'div.content', author: 'a.bigusername' },
-    { container: 'article.message', body: 'div.message-userContent', author: 'h4.message-name a' },
-  ]
+    // Skip non-numeric post IDs (e.g. "posts" container itself)
+    if (!/^post\d+$/.test(postId)) return
 
-  for (const sel of selectors) {
-    $(sel.container).each((i, el) => {
-      const $el = $(el)
-      const content = $el.find(sel.body).text().replace(/\s+/g, ' ').trim()
-      const author = $el.find(sel.author).text().trim() || 'unknown'
-      const postId = $el.attr('id') ?? `post_${thread.id}_${i}`
+    const content = $el.find(`div[id="post_message_${postId.replace('post', '')}"]`)
+      .text().replace(/\s+/g, ' ').trim()
+    if (!content || content.length < 20) return
 
-      if (!content || content.length < 20) return
+    const author = $el.find('a.bigusername').first().text().trim() || 'unknown'
 
-      // Extract timestamp — vBulletin uses multiple formats
-      const timeEl = $el.find('span.time, span.DateTime, time').first()
-      const timeStr = timeEl.attr('title') ?? timeEl.attr('datetime') ?? timeEl.text()
-      const postedAt = timeStr ? new Date(timeStr) : new Date()
+    // Date is plain text in the first .tcell of .thead row, e.g. "9th June 2026 | 16:31"
+    const dateText = $el.find('div.thead .tcell').first().text().replace(/\s+/g, ' ').trim()
+    const dateClean = dateText.split('|')[0].trim() // "9th June 2026"
+    const postedAt = dateClean ? new Date(dateClean) : new Date()
 
-      posts.push({
-        externalId: `pprune_${postId.replace(/\D+/g, '')}_${thread.id}`,
-        threadId: thread.id,
-        threadTitle: thread.title,
-        content: truncate(content),
-        author,
-        url: thread.url,
-        postedAt: isNaN(postedAt.getTime()) ? new Date() : postedAt,
-      })
+    posts.push({
+      externalId: `pprune_${postId.replace(/\D+/g, '')}_${thread.id}`,
+      threadId: thread.id,
+      threadTitle: thread.title,
+      content: truncate(content),
+      author,
+      url: thread.url,
+      postedAt: isNaN(postedAt.getTime()) ? new Date() : postedAt,
     })
-
-    if (posts.length > 0) break // found posts with this selector pattern
-  }
+  })
 
   return posts
 }

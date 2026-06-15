@@ -1,24 +1,8 @@
-// Topic aggregation — after sentiment analysis, cluster posts by the
-// regulatory document they reference, compute per-topic stats, and ask Claude
-// to identify the dominant discussion theme for each topic.
-import Anthropic from '@anthropic-ai/sdk'
+// Topic aggregation — after sentiment analysis, cluster posts by thread,
+// compute per-topic sentiment stats, and surface the most-discussed threads.
 import { db } from '../db/client.js'
-import { posts, sentimentAnalyses, topics } from '../db/schema.js'
-import { eq, isNotNull } from 'drizzle-orm'
-
-const client = new Anthropic()
-
-// Known press release documents — derived from the pipeline press feed.
-// In production this list is fetched from the press release database.
-// The key is the doc ref; the value is the human-readable title.
-const KNOWN_DOCS: Record<string, string> = {
-  'AD-2026-12-08': 'Bell 429 main rotor gearbox AD',
-  'EASA-NPA-2026-04': 'EASA BVLOS drone consultation',
-  'TC-CASA-2026-117': 'Hydrogen-electric Dash 8 certification',
-  'FAA-2026-0944': 'Part 121 cargo crew rest rule',
-  'EASA-SIB-2026-09': 'Lithium battery cargo fire bulletin',
-  'TC-AD-CF-2026-22': 'De Havilland DHC-6 fuel line directive',
-}
+import { posts, sentimentAnalyses, topics, forums } from '../db/schema.js'
+import { eq, gte, desc, sql } from 'drizzle-orm'
 
 // Net sentiment label from a score
 function sentimentLabel(net: number): string {
@@ -32,122 +16,95 @@ function sentimentLabel(net: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Ask Claude for the dominant discussion theme for a topic given sample posts
-// ---------------------------------------------------------------------------
-async function getDominantTheme(
-  docRef: string,
-  docTitle: string,
-  sampleSummaries: string[],
-): Promise<string> {
-  if (sampleSummaries.length === 0) return 'General discussion'
-
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 100,
-    messages: [
-      {
-        role: 'user',
-        content: `Based on these forum post summaries about "${docTitle}" (${docRef}), write a single short phrase (6-12 words) describing the dominant discussion theme:
-
-${sampleSummaries.slice(0, 15).join('\n')}
-
-Reply with just the phrase, no punctuation at the end, no quotes.`,
-      },
-    ],
-  })
-
-  const text = message.content[0].type === 'text' ? message.content[0].text.trim() : ''
-  return text || 'General discussion'
-}
-
-// ---------------------------------------------------------------------------
-// Rebuild all topics from the current sentiment_analyses data
+// Rebuild topics by grouping analysed posts by thread (last 30 days).
+// Each thread with at least 1 analysed post becomes a topic row.
 // ---------------------------------------------------------------------------
 export async function rebuildTopics(): Promise<void> {
-  // Get all analysed posts that mention a document reference
-  const analysed = await db
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+
+  // Aggregate per threadId: sentiment stats + forum membership
+  const rows = await db
     .select({
-      postId: sentimentAnalyses.postId,
-      tone: sentimentAnalyses.tone,
-      score: sentimentAnalyses.score,
-      docRefs: sentimentAnalyses.docRefs,
-      summary: sentimentAnalyses.summary,
+      threadId: posts.threadId,
+      threadTitle: posts.threadTitle,
       forumId: posts.forumId,
+      forumName: forums.name,
+      postCount:  sql<number>`count(distinct ${posts.id})`,
+      posCount:   sql<number>`sum(case when ${sentimentAnalyses.tone} = 'pos' then 1 else 0 end)`,
+      neuCount:   sql<number>`sum(case when ${sentimentAnalyses.tone} = 'neu' then 1 else 0 end)`,
+      negCount:   sql<number>`sum(case when ${sentimentAnalyses.tone} = 'neg' then 1 else 0 end)`,
+      avgScore:   sql<number>`avg(${sentimentAnalyses.score})`,
     })
-    .from(sentimentAnalyses)
-    .innerJoin(posts, eq(posts.id, sentimentAnalyses.postId))
-    .where(isNotNull(sentimentAnalyses.docRefs))
+    .from(posts)
+    .innerJoin(sentimentAnalyses, eq(sentimentAnalyses.postId, posts.id))
+    .innerJoin(forums, eq(forums.id, posts.forumId))
+    .where(gte(posts.postedAt, thirtyDaysAgo))
+    .groupBy(posts.threadId, posts.threadTitle, posts.forumId, forums.name)
+    .orderBy(desc(sql`count(distinct ${posts.id})`))
+    .limit(50)
 
-  // Group posts by doc ref
-  const docGroups = new Map<string, typeof analysed>()
+  if (rows.length === 0) {
+    console.log('[topics] No analysed posts in last 30 days — skipping rebuild')
+    return
+  }
 
-  for (const row of analysed) {
-    if (!row.docRefs) continue
-    const refs = row.docRefs.split(',').map(r => r.trim()).filter(Boolean)
-    for (const ref of refs) {
-      const existing = docGroups.get(ref) ?? []
-      existing.push(row)
-      docGroups.set(ref, existing)
+  // Merge threads with the same title across forums (cross-forum discussion)
+  const merged = new Map<string, {
+    title: string
+    pos: number; neu: number; neg: number; total: number
+    scoreSum: number; forums: Set<string>
+  }>()
+
+  for (const row of rows) {
+    const key = (row.threadTitle ?? row.threadId ?? 'unknown').slice(0, 120)
+    const existing = merged.get(key)
+    const pos   = Number(row.posCount ?? 0)
+    const neu   = Number(row.neuCount ?? 0)
+    const neg   = Number(row.negCount ?? 0)
+    const total = Number(row.postCount ?? 0)
+    const avg   = Number(row.avgScore ?? 0)
+
+    if (existing) {
+      existing.pos   += pos
+      existing.neu   += neu
+      existing.neg   += neg
+      existing.total += total
+      existing.scoreSum += avg * total
+      existing.forums.add(row.forumName ?? 'Unknown')
+    } else {
+      merged.set(key, {
+        title: key,
+        pos, neu, neg, total,
+        scoreSum: avg * total,
+        forums: new Set([row.forumName ?? 'Unknown']),
+      })
     }
   }
 
-  for (const [docRef, docPosts] of docGroups) {
-    const title = KNOWN_DOCS[docRef] ?? `Discussion: ${docRef}`
+  // Clear old topics and insert fresh
+  await db.delete(topics)
 
-    // Aggregate sentiment
-    const pos = docPosts.filter(p => p.tone === 'pos').length
-    const neu = docPosts.filter(p => p.tone === 'neu').length
-    const neg = docPosts.filter(p => p.tone === 'neg').length
-    const total = docPosts.length
+  for (const [key, t] of merged) {
+    const netSentiment = t.total > 0 ? Math.round(t.scoreSum / t.total) : 0
+    const topForums = [...t.forums].slice(0, 3).join(', ')
 
-    const avgScore = docPosts.reduce((sum, p) => sum + (p.score ?? 0), 0) / total
-    const netSentiment = Math.round(avgScore)
+    await db.insert(topics).values({
+      docRef: key.slice(0, 200),
+      title: t.title,
+      posCount: t.pos,
+      neuCount: t.neu,
+      negCount: t.neg,
+      postCount: t.total,
+      forumCount: t.forums.size,
+      netSentiment,
+      sentimentLabel: sentimentLabel(netSentiment),
+      dominantTheme: topForums,
+      topForums,
+      updatedAt: new Date(),
+    }).onConflictDoNothing()
 
-    // Count distinct forums
-    const forumSet = new Set(docPosts.map(p => p.forumId))
-
-    // Get theme from Claude (using summaries)
-    const summaries = docPosts.map(p => p.summary ?? '').filter(Boolean)
-    const dominantTheme = await getDominantTheme(docRef, title, summaries)
-
-    // Top forums — we'd need to join forum names here; for now use IDs as placeholder
-    // In production, join with forums table to get names
-    const topForums = [...forumSet].slice(0, 3).join(',')
-
-    // Upsert topic
-    await db
-      .insert(topics)
-      .values({
-        docRef,
-        title,
-        posCount: pos,
-        neuCount: neu,
-        negCount: neg,
-        postCount: total,
-        forumCount: forumSet.size,
-        netSentiment,
-        sentimentLabel: sentimentLabel(netSentiment),
-        dominantTheme,
-        topForums,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: topics.docRef,
-        set: {
-          title,
-          posCount: pos,
-          neuCount: neu,
-          negCount: neg,
-          postCount: total,
-          forumCount: forumSet.size,
-          netSentiment,
-          sentimentLabel: sentimentLabel(netSentiment),
-          dominantTheme,
-          topForums,
-          updatedAt: new Date(),
-        },
-      })
-
-    console.log(`[topics] ${docRef}: ${total} posts, net ${netSentiment} (${sentimentLabel(netSentiment)})`)
+    console.log(`[topics] "${t.title.slice(0, 60)}": ${t.total} posts, net ${netSentiment}`)
   }
+
+  console.log(`[topics] Rebuilt ${merged.size} topics`)
 }

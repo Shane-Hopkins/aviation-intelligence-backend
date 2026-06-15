@@ -1,4 +1,4 @@
-// Press release routes — feeds the Dashboard press archive screen.
+// Press release routes — archive + press source health.
 import { Hono } from 'hono'
 import { db } from '../../db/client.js'
 import { pressReleases, pressSources, pressScraperRuns } from '../../db/schema.js'
@@ -28,7 +28,7 @@ function utcLabel(date: Date): string {
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/releases — latest press releases, shaped for the Dashboard feed
+// GET /api/releases — latest press releases for the archive
 // ---------------------------------------------------------------------------
 router.get('/', async c => {
   const limit = Math.min(Number(c.req.query('limit') ?? 20), 100)
@@ -67,7 +67,7 @@ router.get('/', async c => {
       imageUrl:     r.imageUrl ?? null,
       time:         timeAgo(refDate),
       date:         utcLabel(refDate),
-      summary:      r.aiSummary ?? 'AI summary pending…',
+      summary:      r.aiSummary ?? null,
       jurisdiction: r.jurisdiction ?? '—',
       effective:    r.effectiveDate ?? '—',
     }
@@ -77,7 +77,102 @@ router.get('/', async c => {
 })
 
 // ---------------------------------------------------------------------------
+// NOTE: static sub-paths MUST come before /:id to avoid mis-routing
+// ---------------------------------------------------------------------------
+
+// GET /api/releases/sources/status — per-source health cards + sparkline history
+router.get('/sources/status', async c => {
+  const allSources = await db.query.pressSources.findMany({ orderBy: s => s.name })
+
+  const sources = await Promise.all(allSources.map(async s => {
+    const runs = await db.query.pressScraperRuns.findMany({
+      where: eq(pressScraperRuns.sourceId, s.id),
+      orderBy: r => desc(r.startedAt),
+      limit: 12,
+    })
+
+    const history = runs.slice().reverse().map(r => {
+      if (r.status === 'ok')   return 100
+      if (r.status === 'warn') return r.itemsCollected > 0 ? 70 : 40
+      return 0
+    })
+    while (history.length < 12) history.unshift(100)
+
+    const rate = Math.round(history.reduce((a, b) => a + b, 0) / 12 * 10) / 10
+    const okRuns = runs.filter(r => r.itemsCollected > 0)
+    const avg = okRuns.length > 0
+      ? Math.round(okRuns.reduce((a, r) => a + r.itemsCollected, 0) / okRuns.length)
+      : 0
+
+    const last = runs[0]
+    const lastDate = last ? new Date(last.startedAt) : null
+
+    return {
+      id:         s.id,
+      name:       s.name,
+      code:       s.code,
+      url:        s.url.replace(/^https?:\/\//, ''),
+      status:     s.status as 'healthy' | 'degraded' | 'down',
+      lastRun:    lastDate ? timeAgo(lastDate) : 'never',
+      lastRunAbs: last?.completedAt
+        ? new Date(last.completedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
+        : '—',
+      items:      last?.itemsCollected ?? 0,
+      avg,
+      rate,
+      history,
+    }
+  }))
+
+  return c.json({ scrapers: sources })
+})
+
+// GET /api/releases/runs — recent press scraper run log
+router.get('/runs', async c => {
+  const limit = Math.min(Number(c.req.query('limit') ?? 40), 200)
+
+  const runs = await db
+    .select({
+      id:             pressScraperRuns.id,
+      sourceName:     pressSources.name,
+      startedAt:      pressScraperRuns.startedAt,
+      itemsCollected: pressScraperRuns.itemsCollected,
+      status:         pressScraperRuns.status,
+      error:          pressScraperRuns.error,
+    })
+    .from(pressScraperRuns)
+    .innerJoin(pressSources, eq(pressSources.id, pressScraperRuns.sourceId))
+    .orderBy(desc(pressScraperRuns.startedAt))
+    .limit(limit)
+
+  const log = runs.map(r => ({
+    time:  r.startedAt ? timeAgo(new Date(r.startedAt)) : '—',
+    level: (r.status === 'ok' ? 'ok' : r.status === 'warn' ? 'warn' : 'err') as 'ok' | 'warn' | 'err',
+    src:   r.sourceName,
+    msg:   r.status === 'ok'
+      ? `${r.itemsCollected} new release${r.itemsCollected === 1 ? '' : 's'} collected`
+      : r.error ?? 'Run failed',
+  }))
+
+  return c.json({ log })
+})
+
+// POST /api/releases/run-all — trigger all press scrapers manually
+router.post('/run-all', async c => {
+  runAllPressSources().catch(console.error)
+  return c.json({ message: 'Press scrape run started' }, 202)
+})
+
+// POST /api/releases/run/:sourceId — trigger a single press source
+router.post('/run/:sourceId', async c => {
+  const sourceId = Number(c.req.param('sourceId'))
+  runPressSource(sourceId).catch(console.error)
+  return c.json({ message: `Press scrape started for source ${sourceId}` }, 202)
+})
+
+// ---------------------------------------------------------------------------
 // GET /api/releases/:id — full detail for a single press release
+// (must be last to avoid matching static paths above)
 // ---------------------------------------------------------------------------
 router.get('/:id', async c => {
   const id = Number(c.req.param('id'))
@@ -123,84 +218,11 @@ router.get('/:id', async c => {
       imageUrl:     r.imageUrl ?? null,
       time:         timeAgo(refDate),
       date:         utcLabel(refDate),
-      summary:      r.aiSummary ?? null,
       jurisdiction: r.jurisdiction ?? null,
       effective:    r.effectiveDate ?? null,
       fullContent:  r.fullContent ?? r.content ?? null,
     },
   })
-})
-
-// ---------------------------------------------------------------------------
-// GET /api/press-sources/status — per-source health cards (same shape as
-// scraper status but for press sources). Also exposes recent run history.
-// ---------------------------------------------------------------------------
-router.get('/sources/status', async c => {
-  const allSources = await db.query.pressSources.findMany({ orderBy: s => s.name })
-
-  const sources = await Promise.all(allSources.map(async s => {
-    const runs = await db.query.pressScraperRuns.findMany({
-      where: eq(pressScraperRuns.sourceId, s.id),
-      orderBy: r => desc(r.startedAt),
-      limit: 12,
-    })
-
-    const history = runs
-      .slice()
-      .reverse()
-      .map(r => {
-        if (r.status === 'ok')   return 100
-        if (r.status === 'warn') return r.itemsCollected > 0 ? 70 : 40
-        return 0
-      })
-
-    while (history.length < 12) history.unshift(100)
-
-    const rate = Math.round(history.reduce((a, b) => a + b, 0) / 12 * 10) / 10
-
-    const okRuns = runs.filter(r => r.itemsCollected > 0)
-    const avg = okRuns.length > 0
-      ? Math.round(okRuns.reduce((a, r) => a + r.itemsCollected, 0) / okRuns.length)
-      : 0
-
-    const last = runs[0]
-    const lastDate = last ? new Date(last.startedAt) : null
-
-    return {
-      id:         s.id,
-      name:       s.name,
-      code:       s.code,
-      url:        s.url.replace(/^https?:\/\//, ''),
-      status:     s.status as 'healthy' | 'degraded' | 'down',
-      lastRun:    lastDate ? timeAgo(lastDate) : 'never',
-      lastRunAbs: last?.completedAt
-        ? new Date(last.completedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
-        : '—',
-      items:      last?.itemsCollected ?? 0,
-      avg,
-      rate,
-      history,
-    }
-  }))
-
-  return c.json({ scrapers: sources })
-})
-
-// ---------------------------------------------------------------------------
-// POST /api/releases/run-all — trigger all press scrapers manually
-// ---------------------------------------------------------------------------
-router.post('/run-all', async c => {
-  runAllPressSources().catch(console.error)
-  return c.json({ message: 'Press scrape run started' }, 202)
-})
-
-// ---------------------------------------------------------------------------
-// POST /api/releases/run/:sourceId — trigger a single press source
-// ---------------------------------------------------------------------------
-router.post('/run/:sourceId', async c => {
-  const sourceId = Number(c.req.param('sourceId'))
-  runPressSource(sourceId).catch(console.error)
-  return c.json({ message: `Press scrape started for source ${sourceId}` }, 202)
 })
 
 export default router

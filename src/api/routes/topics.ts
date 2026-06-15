@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { db } from '../../db/client.js'
 import { topics, topicPosts, posts, forums, sentimentAnalyses } from '../../db/schema.js'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, isNotNull, sql } from 'drizzle-orm'
 
 const router = new Hono()
 
@@ -12,6 +12,17 @@ router.get('/', async c => {
   const allTopics = await db.query.topics.findMany({
     orderBy: t => desc(t.postCount),
   })
+
+  // Build a map from threadTitle → a representative post URL (one query, no N+1)
+  const urlRows = await db
+    .select({
+      threadTitle: posts.threadTitle,
+      url: sql<string>`min(${posts.url})`,
+    })
+    .from(posts)
+    .where(isNotNull(posts.url))
+    .groupBy(posts.threadTitle)
+  const urlMap = new Map(urlRows.map(r => [r.threadTitle, r.url]))
 
   // Compute percentage breakdowns
   const result = allTopics.map(t => {
@@ -27,6 +38,7 @@ router.get('/', async c => {
       id: t.id,
       title: t.title,
       doc: t.docRef,
+      url: urlMap.get(t.title) ?? null,
       posts: t.postCount.toLocaleString(),
       forums: t.forumCount,
       pos,

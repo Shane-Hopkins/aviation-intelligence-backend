@@ -92,14 +92,11 @@ function parsePosts(html: string, thread: ThreadRef): ScrapedPost[] {
   const $ = cheerio.load(html)
   const posts: ScrapedPost[] = []
 
-  // PPRuNe uses vBulletin. Each post is a div[id^="post"] inside div#posts.
-  // The numeric ID (e.g. "post12100196") distinguishes posts from other divs.
-  $('#posts > div[id^="post"]').each((i, el) => {
+  // PPRuNe uses vBulletin. Post divs have id="post12345678" (post + digits only).
+  // They are not direct children of #posts so we filter rather than use >.
+  $('div[id^="post"]').filter((_, el) => /^post\d+$/.test($(el).attr('id') ?? '')).each((i, el) => {
     const $el = $(el)
     const postId = $el.attr('id') ?? `post_${thread.id}_${i}`
-
-    // Skip non-numeric post IDs (e.g. "posts" container itself)
-    if (!/^post\d+$/.test(postId)) return
 
     const content = $el.find(`div[id="post_message_${postId.replace('post', '')}"]`)
       .text().replace(/\s+/g, ' ').trim()

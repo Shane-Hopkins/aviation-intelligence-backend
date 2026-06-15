@@ -1,0 +1,36 @@
+{
+  "name": "aviation-intelligence-backend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --experimental-specifier-resolution=node dist/index.js",
+    "build": "tsc",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:seed": "tsx src/db/seed.ts",
+    "scrape:once": "tsx src/scrapers/runner.ts",
+    "press:once": "tsx src/press/runner.ts",
+    "start:prod": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.28.0",
+    "@hono/node-server": "^1.12.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.33.0",
+    "hono": "^4.5.0",
+    "node-cron": "^3.0.3",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/pg": "^8.11.6",
+    "drizzle-kit": "^0.24.0",
+    "tsx": "^4.17.0",
+    "typescript": "^5.5.3"
+  }
+}

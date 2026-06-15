@@ -13,7 +13,7 @@ router.get('/', async c => {
     orderBy: t => desc(t.postCount),
   })
 
-  // Build a map from threadTitle → a representative post URL (one query, no N+1)
+  // Build thread title → URL and synopsis maps in two bulk queries (no N+1)
   const urlRows = await db
     .select({
       threadTitle: posts.threadTitle,
@@ -23,6 +23,18 @@ router.get('/', async c => {
     .where(isNotNull(posts.url))
     .groupBy(posts.threadTitle)
   const urlMap = new Map(urlRows.map(r => [r.threadTitle, r.url]))
+
+  // Get a representative AI summary per thread (the most informative one by length)
+  const synopsisRows = await db
+    .select({
+      threadTitle: posts.threadTitle,
+      synopsis: sql<string>`max(${sentimentAnalyses.summary})`,
+    })
+    .from(posts)
+    .innerJoin(sentimentAnalyses, eq(sentimentAnalyses.postId, posts.id))
+    .where(isNotNull(sentimentAnalyses.summary))
+    .groupBy(posts.threadTitle)
+  const synopsisMap = new Map(synopsisRows.map(r => [r.threadTitle, r.synopsis]))
 
   // Compute percentage breakdowns
   const result = allTopics.map(t => {
@@ -39,6 +51,7 @@ router.get('/', async c => {
       title: t.title,
       doc: t.docRef,
       url: urlMap.get(t.title) ?? null,
+      synopsis: synopsisMap.get(t.title) ?? null,
       posts: t.postCount.toLocaleString(),
       forums: t.forumCount,
       pos,

@@ -29,7 +29,7 @@ interface AnswerParagraph {
 // (falls back to ILIKE if the ts_vector index isn't available yet)
 // ---------------------------------------------------------------------------
 async function retrieveRelevantPosts(query: string, limit = 30) {
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+  const sevenDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 
   // Simple keyword approach using ILIKE — works without any FTS setup
   const keywords = query
@@ -83,7 +83,7 @@ async function retrieveRelevantPosts(query: string, limit = 30) {
     .from(posts)
     .innerJoin(forums, eq(forums.id, posts.forumId))
     .leftJoin(sentimentAnalyses, eq(sentimentAnalyses.postId, posts.id))
-    .where(sql`${conditions[0]}`) // simplified — full OR chain in production
+    .where(sql`${conditions.reduce((acc, c, i) => i === 0 ? c : sql`${acc} or ${c}`)}`)
     .orderBy(desc(posts.postedAt))
     .limit(limit)
 }

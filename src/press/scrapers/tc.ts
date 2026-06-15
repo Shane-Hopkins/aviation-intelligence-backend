@@ -4,8 +4,8 @@ import * as cheerio from 'cheerio'
 import type { ScrapedRelease, PressScraperResult } from './types.js'
 import { truncate } from './types.js'
 
-const BASE = 'https://tc.canada.ca'
-const LIST_URL = `${BASE}/en/corporate-services/news-communications/news-releases`
+const BASE = 'https://www.canada.ca'
+const LIST_URL = `${BASE}/en/news/advanced-news-search/news-results.html?dprtmnt=departmentoftransport&type=newsReleases`
 
 // Try to detect aviation-relevant releases by headline keywords
 const AVIATION_RE =
@@ -23,44 +23,28 @@ export async function scrapeTC(): Promise<PressScraperResult> {
     const $ = cheerio.load(html)
     const releases: ScrapedRelease[] = []
 
-    // Canada.ca WET theme — news listing uses various container classes
-    const rowSelectors = [
-      '.news-list li',
-      '.media-list li',
-      'ul.list-group li',
-      '.gc-docs li',
-      'article',
-    ]
-
-    let rows = $()
-    for (const sel of rowSelectors) {
-      rows = $(sel)
-      if (rows.length > 0) break
-    }
-
-    // Fallback: any anchor inside main content area
-    if (rows.length === 0) {
-      rows = $('main a[href]').closest('li,article,div.item')
-    }
-
-    rows.each((_, el) => {
-      const $el = $(el)
-      const $link = $el.find('a[href]').first()
-      const headline = $link.text().trim()
+    // canada.ca advanced news search — items are structured as:
+    //   <h3><a href="[abs url]">headline</a></h3>
+    //   <p>YYYY-MM-DD | Transport Canada | news releases</p>
+    //   <p>description</p>
+    // No container class; items are separated by <hr>.
+    $('h3 > a[href*="transport-canada"]').each((_, el) => {
+      const $a = $(el)
+      const headline = $a.text().trim()
       if (!headline) return
       if (!AVIATION_RE.test(headline)) return
 
-      const href = $link.attr('href') ?? ''
+      const href = $a.attr('href') ?? ''
       const url = href.startsWith('http') ? href : `${BASE}${href}`
       const externalId = href.replace(/\/+$/, '').split('/').pop() ?? headline
 
-      const dateStr =
-        $el.find('time').attr('datetime') ??
-        $el.find('time').text().trim() ??
-        $el.find('.date, .news-date, .mrgn-bttm-sm').first().text().trim()
-
+      // Next <p> contains "YYYY-MM-DD | dept | type"
+      const metaText = $a.closest('h3').next('p').text().trim()
+      const dateStr = metaText.split('|')[0].trim()
       const publishedAt = dateStr ? new Date(dateStr) : undefined
-      const blurb = $el.find('p').first().text().trim()
+
+      // Second <p> is the blurb
+      const blurb = $a.closest('h3').nextAll('p').eq(1).text().trim()
 
       releases.push({
         externalId,

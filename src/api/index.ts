@@ -16,7 +16,7 @@ app.use('*', logger())
 app.use(
   '*',
   cors({
-    origin: ['http://localhost:5173', 'http://localhost:4173'],
+    origin: (origin) => origin ?? '*',
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE'],
     allowHeaders: ['Content-Type', 'Authorization'],
   }),

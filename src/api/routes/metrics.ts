@@ -27,9 +27,9 @@ router.get('/community', async c => {
 
     // Net sentiment (avg score across analysed posts from last 7 days)
     db
-      .select({ avg: sql<number>`avg(sa.score)` })
+      .select({ avg: sql<number>`avg(${sentimentAnalyses.score})` })
       .from(sentimentAnalyses)
-      .innerJoin(posts, sql`posts.id = sentiment_analyses.post_id`)
+      .innerJoin(posts, eq(posts.id, sentimentAnalyses.postId))
       .where(gte(posts.postedAt, sevenDaysAgo))
       .then(r => Math.round(r[0]?.avg ?? 0)),
 

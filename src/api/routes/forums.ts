@@ -19,7 +19,7 @@ router.get('/', async c => {
     .select({
       forumId: posts.forumId,
       postCount: sql<number>`count(distinct posts.id)`,
-      avgScore: sql<number>`avg(sa.score)`,
+      avgScore: sql<number>`avg(${sentimentAnalyses.score})`,
     })
     .from(posts)
     .leftJoin(sentimentAnalyses, eq(sentimentAnalyses.postId, posts.id))

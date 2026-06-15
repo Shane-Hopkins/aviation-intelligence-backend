@@ -64,9 +64,9 @@ export async function scrapeBoeing(): Promise<PressScraperResult> {
 
         const dateStr =
           $el.find('.wd_date').first().text().trim() ||
-          $el.find('time').attr('datetime') ??
+          ($el.find('time').attr('datetime') ??
           $el.find('time').text().trim() ??
-          $el.find('.date, .news-date, .release-date').first().text().trim()
+          $el.find('.date, .news-date, .release-date').first().text().trim())
 
         const publishedAt = dateStr ? new Date(dateStr) : undefined
         const blurb = $el.find('.wd_summary, p').first().text().trim()

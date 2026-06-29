@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { db } from '../../db/client.js'
 import { pressReleases, pressSources, pressScraperRuns } from '../../db/schema.js'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, and, sql } from 'drizzle-orm'
 import { runAllPressSources, runPressSource } from '../../press/runner.js'
 
 const router = new Hono()
@@ -32,6 +32,7 @@ function utcLabel(date: Date): string {
 // ---------------------------------------------------------------------------
 router.get('/', async c => {
   const limit = Math.min(Number(c.req.query('limit') ?? 20), 100)
+  const source = c.req.query('source') // optional source code filter e.g. 'FAA'
 
   const rows = await db
     .select({
@@ -48,11 +49,13 @@ router.get('/', async c => {
       effectiveDate: pressReleases.effectiveDate,
       aiSummary:     pressReleases.aiSummary,
       imageUrl:      pressReleases.imageUrl,
+      fullContent:   pressReleases.fullContent,
       createdAt:     pressReleases.createdAt,
     })
     .from(pressReleases)
     .innerJoin(pressSources, eq(pressSources.id, pressReleases.sourceId))
-    .orderBy(desc(pressReleases.publishedAt), desc(pressReleases.createdAt))
+    .where(source ? and(eq(pressSources.code, source)) : undefined)
+    .orderBy(sql`${pressReleases.publishedAt} DESC NULLS LAST`, desc(pressReleases.createdAt))
     .limit(limit)
 
   const releases = rows.map(r => {
@@ -68,6 +71,7 @@ router.get('/', async c => {
       time:         timeAgo(refDate),
       date:         utcLabel(refDate),
       summary:      r.aiSummary ?? null,
+      fullContent:  r.fullContent ?? r.aiSummary ?? null,
       jurisdiction: r.jurisdiction ?? '—',
       effective:    r.effectiveDate ?? '—',
     }
@@ -107,20 +111,42 @@ router.get('/sources/status', async c => {
     const last = runs[0]
     const lastDate = last ? new Date(last.startedAt) : null
 
+    const [latestRelease] = await db
+      .select({ publishedAt: pressReleases.publishedAt, createdAt: pressReleases.createdAt })
+      .from(pressReleases)
+      .where(eq(pressReleases.sourceId, s.id))
+      .orderBy(sql`${pressReleases.publishedAt} DESC NULLS LAST`, desc(pressReleases.createdAt))
+      .limit(1)
+    const MIN_YEAR = new Date().getFullYear() - 8
+    const rawDate = latestRelease?.publishedAt
+      ? new Date(latestRelease.publishedAt)
+      : latestRelease?.createdAt
+        ? new Date(latestRelease.createdAt)
+        : null
+    // Ignore implausibly old publishedAt (bad parse) — fall back to createdAt
+    const latestDate = rawDate && rawDate.getFullYear() < MIN_YEAR && latestRelease?.createdAt
+      ? new Date(latestRelease.createdAt)
+      : rawDate
+    const lastArticleAt = latestDate
+      ? latestDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+      : '—'
+
     return {
-      id:         s.id,
-      name:       s.name,
-      code:       s.code,
-      url:        s.url.replace(/^https?:\/\//, ''),
-      status:     s.status as 'healthy' | 'degraded' | 'down',
-      lastRun:    lastDate ? timeAgo(lastDate) : 'never',
-      lastRunAbs: last?.completedAt
+      id:            s.id,
+      name:          s.name,
+      code:          s.code,
+      url:           s.url.replace(/^https?:\/\//, ''),
+      status:        s.status as 'healthy' | 'degraded' | 'down',
+      isRunning:     last?.status === 'running',
+      lastRun:       lastDate ? timeAgo(lastDate) : 'never',
+      lastRunAbs:    last?.completedAt
         ? new Date(last.completedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
         : '—',
-      items:      last?.itemsCollected ?? 0,
+      items:         last?.itemsCollected ?? 0,
       avg,
       rate,
       history,
+      lastArticleAt,
     }
   }))
 
@@ -220,7 +246,7 @@ router.get('/:id', async c => {
       date:         utcLabel(refDate),
       jurisdiction: r.jurisdiction ?? null,
       effective:    r.effectiveDate ?? null,
-      fullContent:  r.fullContent ?? r.content ?? null,
+      fullContent:  r.fullContent ?? r.content ?? r.aiSummary ?? null,
     },
   })
 })

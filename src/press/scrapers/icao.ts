@@ -18,66 +18,39 @@ export async function scrapeICAO(): Promise<PressScraperResult> {
     const html = await res.text()
     const $ = cheerio.load(html)
     const releases: ScrapedRelease[] = []
+    const seen = new Set<string>()
 
-    // SharePoint-based page with news tiles
-    const rowSelectors = [
-      '.ms-rtestate-field .link-item',
-      '.NewsItems li',
-      'div[class*="news"] a',
-      '.ms-srch-item',
-      'td.ms-vb2',
-    ]
+    // ICAO newsroom is now Drupal — articles are all at /news/{slug}
+    $('a[href^="/news/"]').each((_, el) => {
+      const $a = $(el)
+      const href = $a.attr('href') ?? ''
+      if (!href || seen.has(href)) return
+      seen.add(href)
 
-    for (const sel of rowSelectors) {
-      $(sel).each((_, el) => {
-        const $el = $(el)
-        const $link = $el.is('a') ? $el : $el.find('a[href]').first()
-        const headline = $link.text().trim() || $el.text().trim()
-        if (!headline || headline.length < 10) return
+      // The visible text of the link is the headline; skip nav/sidebar short links
+      const headline = $a.text().replace(/\s+/g, ' ').trim()
+      if (!headline || headline.length < 20) return
 
-        const href = $link.attr('href') ?? ''
-        if (!href) return
+      const url = `${BASE}${href}`
+      const externalId = href.replace(/\/+$/, '').split('/').pop() ?? href
 
-        const url = href.startsWith('http') ? href : `${BASE}${href}`
-        const externalId = href.replace(/\/+$/, '').split('/').pop() ?? headline
+      // Try to find a date in the nearest list/article ancestor
+      const $ancestor = $a.closest('li, article, .views-row, .card')
+      const dateStr =
+        $ancestor.find('time').first().attr('datetime') ??
+        $ancestor.find('[class*="date"]').first().text().trim()
+      const publishedAt = dateStr ? new Date(dateStr) : undefined
 
-        const dateStr =
-          $el.find('time').attr('datetime') ??
-          $el.find('[class*="date"]').first().text().trim() ??
-          $el.closest('tr').find('td').eq(1).text().trim()
-
-        const publishedAt = dateStr ? new Date(dateStr) : undefined
-        const blurb = $el.find('p,[class*="desc"]').first().text().trim()
-
-        releases.push({
-          externalId,
-          headline,
-          url,
-          publishedAt: publishedAt && !isNaN(publishedAt.getTime()) ? publishedAt : undefined,
-          content: blurb ? truncate(blurb, 800) : undefined,
-        })
+      releases.push({
+        externalId,
+        headline,
+        url,
+        publishedAt: publishedAt && !isNaN(publishedAt.getTime()) ? publishedAt : undefined,
       })
-      if (releases.length > 0) break
-    }
-
-    // Generic fallback for any anchor in page content
-    if (releases.length === 0) {
-      $('a[href*="/Newsroom/"], a[href*="/newsroom/"]').each((_, el) => {
-        const $a = $(el)
-        const headline = $a.text().trim()
-        if (!headline || headline.length < 15) return
-        const href = $a.attr('href') ?? ''
-        const url = href.startsWith('http') ? href : `${BASE}${href}`
-        releases.push({
-          externalId: href.replace(/\/+$/, '').split('/').pop() ?? headline,
-          headline,
-          url,
-        })
-      })
-    }
+    })
 
     if (releases.length === 0) {
-      return { releases: [], status: 'warn', itemsCollected: 0, error: 'No items parsed — SharePoint selectors may need updating' }
+      return { releases: [], status: 'warn', itemsCollected: 0, error: 'No /news/ links found — page structure may have changed' }
     }
 
     return { releases, status: 'ok', itemsCollected: releases.length }

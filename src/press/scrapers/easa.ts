@@ -36,7 +36,8 @@ export async function scrapeEASA(): Promise<PressScraperResult> {
     const $ = cheerio.load(insertCmd.data)
     const releases: ScrapedRelease[] = []
 
-    $('article.node--type-easa-press-release').each((_, el) => {
+    // EASA renders items as <div class="node node--type-easa-press-release ...">
+    $('.node--type-easa-press-release').each((_, el) => {
       const $el = $(el)
       const $link = $el.find('a[href]').first()
       const headline = $link.text().trim() || $el.find('h2,h3,h4').first().text().trim()

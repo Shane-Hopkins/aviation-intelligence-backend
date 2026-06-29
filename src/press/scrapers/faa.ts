@@ -17,15 +17,21 @@ interface FRResponse {
   results: FRDoc[]
 }
 
+// Regulatory doc types we care about — filter out Presidential docs, Corrections etc.
+const RELEVANT_TYPES = new Set(['Rule', 'Proposed Rule', 'Notice'])
+
+// Separate fields[] params — the API rejects comma-separated field lists
 const FR_URL =
   'https://www.federalregister.gov/api/v1/documents.json' +
   '?agencies[]=federal-aviation-administration' +
-  '&conditions[type][]=Rule' +
-  '&conditions[type][]=Proposed+Rule' +
-  '&conditions[type][]=Notice' +
   '&per_page=25' +
   '&order=newest' +
-  '&fields[]=document_number,title,html_url,publication_date,type,abstract'
+  '&fields[]=document_number' +
+  '&fields[]=title' +
+  '&fields[]=html_url' +
+  '&fields[]=publication_date' +
+  '&fields[]=type' +
+  '&fields[]=abstract'
 
 export async function scrapeFAA(): Promise<PressScraperResult> {
   try {
@@ -37,14 +43,16 @@ export async function scrapeFAA(): Promise<PressScraperResult> {
 
     const data = await res.json() as FRResponse
 
-    const releases: ScrapedRelease[] = (data.results ?? []).map(doc => ({
-      externalId: doc.document_number,
-      docRef: doc.document_number,
-      headline: doc.title,
-      url: doc.html_url,
-      publishedAt: doc.publication_date ? new Date(doc.publication_date) : undefined,
-      content: doc.abstract ? truncate(doc.abstract, 1500) : undefined,
-    }))
+    const releases: ScrapedRelease[] = (data.results ?? [])
+      .filter(doc => RELEVANT_TYPES.has(doc.type))
+      .map(doc => ({
+        externalId: doc.document_number,
+        docRef: doc.document_number,
+        headline: doc.title,
+        url: doc.html_url,
+        publishedAt: doc.publication_date ? new Date(doc.publication_date) : undefined,
+        content: doc.abstract ? truncate(doc.abstract, 1500) : undefined,
+      }))
 
     return { releases, status: 'ok', itemsCollected: releases.length }
   } catch (err) {

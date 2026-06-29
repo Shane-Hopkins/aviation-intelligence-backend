@@ -15,7 +15,9 @@ export const forums = pgTable('forums', {
   status: text('status').notNull().default('healthy'), // 'healthy' | 'degraded' | 'down'
   enabled: boolean('enabled').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-})
+}, t => ({
+  handleUniq: unique().on(t.handle),
+}))
 
 // ---------------------------------------------------------------------------
 // Posts — individual posts or threads scraped from forums. content is the
@@ -135,6 +137,8 @@ export const pressReleases = pgTable('press_releases', {
   jurisdiction: text('jurisdiction'),
   effectiveDate: text('effective_date'),
   aiSummary: text('ai_summary'),
+  artyTitle: text('arty_title'),     // Claude-rewritten headline (AP News source)
+  artyHtml: text('arty_html'),       // Claude-rewritten article HTML (AP News source)
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, t => ({
   sourceReleaseUniq: unique().on(t.sourceId, t.externalId),

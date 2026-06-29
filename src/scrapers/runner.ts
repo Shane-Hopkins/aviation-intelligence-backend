@@ -5,9 +5,6 @@ import { forums, posts, scraperRuns } from '../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { scrapeReddit } from './reddit.js'
 import { scrapePPRuNe } from './pprune.js'
-import { scrapeAirliners } from './airliners.js'
-import { scrapeStuckMic } from './stuckmic.js'
-import { scrapePilotsOfAmerica } from './pilotsofamerica.js'
 import { analyseNewPosts } from '../analysis/sentiment.js'
 import { rebuildTopics } from '../analysis/topics.js'
 import type { ScraperResult, ScrapedPost } from './types.js'
@@ -28,14 +25,6 @@ async function runScraper(
       const paths = (scraperConfig.sectionPaths as string[]) ?? ['/rumours-news/']
       return scrapePPRuNe(paths)
     }
-    case 'airliners': {
-      const ids = (scraperConfig.forumIds as number[]) ?? []
-      return scrapeAirliners(ids)
-    }
-    case 'stuckmic':
-      return scrapeStuckMic()
-    case 'pilotsofamerica':
-      return scrapePilotsOfAmerica()
     default:
       return { posts: [], status: 'err', itemsCollected: 0, error: `Unknown scraper type: ${scraperType}` }
   }

@@ -28,8 +28,8 @@ function parseForumIndex(html: string): ThreadRef[] {
   const $ = cheerio.load(html)
   const threads: ThreadRef[] = []
 
-  // phpBB: topic links in .topictitle or td.row1/row2 > a
-  $('a.topictitle, .topic_title a, a[href*="viewtopic"]').each((_, el) => {
+  // phpBB/prosilver: thread title links have class="item-title"
+  $('a.item-title[href*="viewtopic"]').each((_, el) => {
     const $el = $(el)
     const href = $el.attr('href') ?? ''
     const title = $el.text().trim()
@@ -79,8 +79,8 @@ export async function scrapeAirliners(forumIds: number[]): Promise<ScraperResult
   const errors: string[] = []
   let status: 'ok' | 'warn' | 'err' = 'ok'
 
-  // Default to the general aviation and airline-specific forum sections
-  const ids = forumIds.length > 0 ? forumIds : [1, 2, 3]
+  // f=3 Civil Aviation, f=4 Travel & Loyalty, f=5 Technical/Operations
+  const ids = forumIds.length > 0 ? forumIds : [3, 4, 5]
 
   for (const fid of ids) {
     const indexUrl = `${BASE}/forum/viewforum.php?f=${fid}`

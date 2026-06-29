@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { db } from '../../db/client.js'
 import { posts, sentimentAnalyses, forums, scraperRuns, pressReleases, pressSources, pressScraperRuns } from '../../db/schema.js'
-import { sql, gte, eq, and, isNotNull, isNull } from 'drizzle-orm'
+import { sql, gte, eq, and, isNotNull } from 'drizzle-orm'
 
 const router = new Hono()
 
@@ -125,8 +125,9 @@ router.get('/health', async c => {
 // Returns the four summary cards for the Dashboard (press release) screen.
 router.get('/dashboard', async c => {
   const oneDayAgo  = new Date(Date.now() - 24 * 60 * 60 * 1000)
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
 
-  const [totalRows, sourcesRows, summarisedRows, unsummarisedRows, runRows, failedRows] = await Promise.all([
+  const [totalRows, sourcesRows, withContentRows, last24hRows, last7dRows, runRows, failedRows] = await Promise.all([
     // Total press releases ever
     db.select({ count: sql<number>`count(*)` }).from(pressReleases),
 
@@ -136,15 +137,20 @@ router.get('/dashboard', async c => {
       .where(eq(pressSources.enabled, true))
       .groupBy(pressSources.status),
 
-    // Releases with AI summaries
+    // Releases with full article text scraped
     db.select({ count: sql<number>`count(*)` })
       .from(pressReleases)
-      .where(isNotNull(pressReleases.aiSummary)),
+      .where(isNotNull(pressReleases.fullContent)),
 
-    // Releases without summaries (pending)
+    // Releases added in last 24h
     db.select({ count: sql<number>`count(*)` })
       .from(pressReleases)
-      .where(isNull(pressReleases.aiSummary)),
+      .where(gte(pressReleases.createdAt, oneDayAgo)),
+
+    // Releases added in last 7 days
+    db.select({ count: sql<number>`count(*)` })
+      .from(pressReleases)
+      .where(gte(pressReleases.createdAt, sevenDaysAgo)),
 
     // Total runs in last 24h
     db.select({ count: sql<number>`count(*)` })
@@ -157,11 +163,12 @@ router.get('/dashboard', async c => {
       .where(and(eq(pressScraperRuns.status, 'err'), gte(pressScraperRuns.startedAt, oneDayAgo))),
   ])
 
-  const total      = Number(totalRows[0]?.count ?? 0)
-  const summarised = Number(summarisedRows[0]?.count ?? 0)
-  const pending    = Number(unsummarisedRows[0]?.count ?? 0)
-  const runs       = Number(runRows[0]?.count ?? 0)
-  const failed     = Number(failedRows[0]?.count ?? 0)
+  const total       = Number(totalRows[0]?.count ?? 0)
+  const withContent = Number(withContentRows[0]?.count ?? 0)
+  const last24h     = Number(last24hRows[0]?.count ?? 0)
+  const last7d      = Number(last7dRows[0]?.count ?? 0)
+  const runs        = Number(runRows[0]?.count ?? 0)
+  const failed      = Number(failedRows[0]?.count ?? 0)
 
   // Source health tally
   const statusMap: Record<string, number> = {}
@@ -174,14 +181,14 @@ router.get('/dashboard', async c => {
   if (degraded > 0) trendParts.push(`${degraded} degraded`)
   if (down > 0)     trendParts.push(`${down} down`)
 
-  const coverage = total > 0 ? ((summarised / total) * 100).toFixed(1) : '100'
-  const successRate = runs > 0 ? (((runs - failed) / runs) * 100).toFixed(1) : '100'
+  const contentPct  = total > 0 ? ((withContent / total) * 100).toFixed(1) : '100'
+  const successRate = runs  > 0 ? (((runs - failed) / runs) * 100).toFixed(1) : '100'
 
   return c.json({
     metrics: [
       {
         label: 'Total releases scraped', value: total.toLocaleString(),
-        trend: pending > 0 ? `${pending} pending AI` : '',
+        trend: `${withContent.toLocaleString()} with full text`,
         trendDir: 'up', foot: 'all time', icon: 'doc',
       },
       {
@@ -190,8 +197,8 @@ router.get('/dashboard', async c => {
         trendDir: degraded + down > 0 ? 'flat' : 'up', foot: 'monitored feeds', icon: 'globe',
       },
       {
-        label: 'AI summaries generated', value: summarised.toLocaleString(),
-        trend: `${coverage}%`, trendDir: 'up', foot: 'coverage', icon: 'spark',
+        label: 'New last 24 h', value: last24h.toLocaleString(),
+        trend: `${last7d} this week`, trendDir: 'up', foot: 'recently scraped', icon: 'spark',
       },
       {
         label: 'Scrape success rate', value: `${successRate}%`,
